@@ -1,0 +1,29 @@
+# Configuration for GCP projects
+gcp_projects:
+  lab:
+    read_project: acme-raw-dev
+    write_project: acme-analytics-dev
+    data_sets:
+      membership_dataset: membership_lab
+    ftp:
+      bucket: acme-ftp-dev
+      path: outbound/members/
+      file_name: ms_acq_dm_active_members_
+    email:
+      sender: pipeline.developer@example.com
+      receiver:
+        - pipeline.developer@example.com
+  value:
+    read_project: acme-raw-prod
+    write_project: acme-analytics-prod
+    data_sets:
+      membership_dataset: membership
+    ftp:
+      bucket: acme-ftp-prod
+      path: outbound/members/
+      file_name: ms_acq_dm_active_members_
+    email:
+      sender: pipeline.developer@example.com
+      receiver:
+        - membership-team@example.com
+        - pipeline.developer@example.com

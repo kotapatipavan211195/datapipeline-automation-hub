@@ -1,0 +1,61 @@
+def {{ v.fn }}({{ v.args|join(", ") }}):
+    """{{ v.doc|py_docline }}"""
+
+    {{ v.log_begin }}
+
+    start = time.perf_counter()
+{% if v.breakout %}
+
+    # Break out configuration information
+{% for line in v.breakout %}
+    {{ line }}
+{% endfor %}
+{% endif %}
+{% if v.dest_expr %}
+    dest_table_id = {{ v.dest_expr }}
+{% endif %}
+{% if sql_logger %}
+    job_id = None
+{% endif %}
+    try:
+        sql = {{ v.sql_literal }}
+{% if v.has_job_config %}
+        job_config = bigquery.QueryJobConfig(
+{% if v.params %}
+            query_parameters=[
+{% for p in v.params %}
+                bigquery.ScalarQueryParameter({{ p.name|py_str }}, {{ p.bq_type|py_str }}, {{ p.expr }}),  # {{ p.explain|py_comment }}
+{% endfor %}
+            ],
+{% endif %}
+{% if v.destination %}
+            destination=dest_table_id,
+            write_disposition={{ v.write_disposition|py_str }},
+{% endif %}
+        )
+        response = bq_client.query(sql, job_config=job_config)  # Google API to run SQL Code
+{% else %}
+        response = bq_client.query(sql)  # Google API to run SQL Code
+{% endif %}
+{% if sql_logger %}
+        job_id = response.job_id
+{% endif %}
+        response.result()  # Wait for complete
+{% if sql_logger %}
+        capture.write_to_log({{ v.fn }}.__name__, sql, "success", job_id)
+{% endif %}
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+{% if v.dest_expr %}
+        # Code to get the results of the load... This is not necessary but nice to have to update logs
+        table = bq_client.get_table(dest_table_id)  # Make an API request.
+        logger.info(f"Loaded {table.num_rows:,} rows and {len(table.schema):,} columns to {dest_table_id}")
+{% endif %}
+    except Exception as e:
+{% if sql_logger %}
+        capture.write_to_log({{ v.fn }}.__name__, sql, "failure", job_id)
+{% endif %}
+        s = str(e)
+        raise RuntimeError(s)

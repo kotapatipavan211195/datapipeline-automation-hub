@@ -1,0 +1,8 @@
+# Runtime dependencies for mkt_engagement_ingest.py (Python 3.9+); the team modules come from /data/data_eng/py_scripts/modules
+google-cloud-bigquery>=3.25
+google-cloud-storage>=2.18
+google-auth>=2.30
+PyYAML>=6.0
+pandas>=2.0
+pyarrow>=14.0
+db-dtypes>=1.2

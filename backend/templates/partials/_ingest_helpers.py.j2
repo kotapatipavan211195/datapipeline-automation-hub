@@ -1,0 +1,253 @@
+{% set g = ingest %}
+def process_file(file_obj, schema: dict{% if g.delimited %}, separator: str{% elif g.fixed %}, widths: list{% elif g.xlsx %}, sheet_name{% endif %}{% if g.header_rows %}, header: str, skiprows: str{% endif %}) -> pd.DataFrame:
+    """Read one file into a DataFrame typed by the table schema{% if g.audit_columns %} (plus the batch audit columns){% endif %}."""
+    logger.info(f"Processing file: {file_obj.name}")
+{% if g.text_rows %}
+    content = io.StringIO(file_obj.download_as_text().encode('utf-8', 'ignore').decode('utf-8'))
+{% elif g.file_format in ("PARQUET", "XLSX") %}
+    content = io.BytesIO(file_obj.download_as_bytes())
+{% else %}
+    content = io.StringIO(file_obj.download_as_text())
+{% endif %}
+    cols = list(schema.keys())
+    type_map = {
+        "string": "string",
+        "int64": "int64",
+        "integer": "Int64",
+        "float": "float64",
+        "float64": "float64",
+        "boolean": "boolean",
+        "bool": "boolean",
+    }
+    dtype = {}
+    parse_dates = []
+    date_cols = []
+    numeric_cols = []
+    for col_name, col_type in schema.items():
+        col_type_lower = col_type.lower()
+        if col_type_lower in ["datetime", "timestamp", "date"]:
+            parse_dates.append(col_name)
+            if col_type_lower == "date":
+                date_cols.append(col_name)
+        elif col_type_lower in ["numeric", "bignumeric"]:
+            dtype[col_name] = "string"
+            numeric_cols.append(col_name)
+        else:
+            dtype[col_name] = type_map.get(col_type_lower, "string")
+
+{% if g.delimited %}
+    df = pd.read_csv(
+        content,
+        names=cols,
+        sep=separator,
+        header=ast.literal_eval(str(header)) if str(header).lower() != "none" else None,
+        skiprows=ast.literal_eval(str(skiprows)) if str(skiprows).lower() != "none" else None,
+        dtype=dtype,
+        parse_dates=parse_dates,
+        date_format="%Y-%m-%d %H:%M:%S",
+        low_memory=False,
+        on_bad_lines="warn",
+    )
+{% elif g.fixed %}
+    # Fixed-width file: each column takes the number of characters given in column_widths (table schema YAML)
+    df = pd.read_fwf(
+        content,
+        widths=widths,
+        names=cols,
+        header=ast.literal_eval(str(header)) if str(header).lower() != "none" else None,
+        skiprows=ast.literal_eval(str(skiprows)) if str(skiprows).lower() != "none" else None,
+        dtype=dtype,
+        parse_dates=parse_dates,
+        date_format="%Y-%m-%d %H:%M:%S",
+    )
+{% elif g.xlsx %}
+    df = pd.read_excel(
+        content,
+        sheet_name=sheet_name,
+        names=cols,
+        header=ast.literal_eval(str(header)) if str(header).lower() != "none" else None,
+        skiprows=ast.literal_eval(str(skiprows)) if str(skiprows).lower() != "none" else None,
+        dtype=dtype,
+        engine="openpyxl",
+    )
+{% elif g.file_format == "PARQUET" %}
+    df = pd.read_parquet(content, columns=cols).astype(dtype)
+{% else %}
+    df = pd.read_json(content, lines=True, dtype=False)[cols].astype(dtype)
+{% endif %}
+
+    for col in parse_dates:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.tz_localize(None)
+                df[col] = df[col].astype('datetime64[us]')
+    for col in date_cols:
+        df[col] = df[col].dt.date
+    for col in numeric_cols:
+        df[col] = df[col].map(lambda value: decimal.Decimal(value) if isinstance(value, str) and value.strip() else None)
+
+    for col, col_dtype in df.dtypes.items():
+        if col_dtype == 'string':
+            df[col] = df[col].fillna("")
+        elif col_dtype.name == "Int64":
+            df[col] = df[col].fillna(pd.NA)
+{% if g.audit_columns %}
+
+    df["file_batch_id"] = str(uuid.uuid4())
+    df["inserted_ts"] = pd.to_datetime(CONFIG["EXEC_DATETIME"])
+    df["updated_ts"] = pd.to_datetime(CONFIG["EXEC_DATETIME"])
+    df["file_name"] = os.path.basename(file_obj.name)
+{% endif %}
+
+    return df
+
+
+def load_to_bq(df, project, {% if g.history %}dataset_id, {% endif %}dataset_id_1, staging_table, {% if g.history %}history_table, {% endif %}schema{% if g.history %}, write_disposition{% endif %}{% if not g.target %}, staging_disposition{% endif %}):
+    """Load one file's rows into the staging table{% if g.history %} and append them to the history table{% endif %}."""
+    table_id_stg = f"{project}.{dataset_id_1}.{staging_table}"
+    job_config = bigquery.LoadJobConfig(
+        schema=schema,
+{% if g.target %}
+        write_disposition="WRITE_TRUNCATE",  # empties the staging table first (and creates it on the first run)
+{% else %}
+        write_disposition=staging_disposition,  # WRITE_TRUNCATE for the run's first file, then WRITE_APPEND
+{% endif %}
+    )
+    job = bq_client.load_table_from_dataframe(df, table_id_stg, job_config=job_config)
+    job.result()
+    logger.info(f"Loaded {len(df)} rows into staging table {table_id_stg}")
+{% if g.history %}
+
+    table_id_his = f"{project}.{dataset_id}.{history_table}"
+    logger.info(f"Appending current batch records to history table: {table_id_his}")
+    history_job_config = bigquery.LoadJobConfig(
+        schema=schema,
+        write_disposition=write_disposition,
+    )
+    history_job = bq_client.load_table_from_dataframe(df, table_id_his, job_config=history_job_config)
+    history_job.result()
+    logger.info(f"Appended {len(df)} rows into history table {table_id_his}")
+{% endif %}
+
+
+{% if not g.target %}
+{% if g.on_no_files != "fail" %}
+def empty_staging_table(project, dataset_id_1, staging_table):
+    """No file in this run: empty the staging table, so the next steps do not read the last run's rows again."""
+    table_id_stg = f"{project}.{dataset_id_1}.{staging_table}"
+    try:
+        bq_client.get_table(table_id_stg)
+    except NotFound:
+        logger.info(f"Staging table {table_id_stg} does not exist yet: nothing to empty")
+        return
+    bq_client.query(f"TRUNCATE TABLE `{table_id_stg}`").result()
+    logger.info(f"Emptied the staging table {table_id_stg}: no file in this run")
+{% endif %}
+{% elif g.load_mode == "merge" %}
+def merge_to_main_table(project, dataset, dataset_1, staging_table, target_table, schema_fields):
+    """MERGE the staged rows into the target table: {{ g.merge_doc }}."""
+    target = f"{project}.{dataset}.{target_table}"
+    source = f"{project}.{dataset_1}.{staging_table}"
+    logger.info(f"Target table name: {target}")
+    logger.info(f"Source table name: {source}")
+
+    key_columns = {{ g.merge_keys }}
+    columns = [f.name for f in schema_fields]{% if g.audit_columns %} + ["file_batch_id", "inserted_ts", "updated_ts", "file_name"]{% endif %}
+
+    update_expr = ",\n            ".join(f"T.`{c}` = S.`{c}`" for c in columns if c not in key_columns + ["inserted_ts"])
+    insert_columns = ", ".join(f"`{c}`" for c in columns)
+    insert_values = ", ".join(f"S.`{c}`" for c in columns)
+
+    # First run: create the target table with the staging table's columns
+    bq_client.query(f"CREATE TABLE IF NOT EXISTS `{target}` LIKE `{source}`").result()
+
+    query = f"""
+    MERGE `{target}` T USING (
+{% if g.merge_order_by %}
+        SELECT *
+        EXCEPT(rn)
+        FROM (
+            SELECT *,
+                row_number() over(
+                    PARTITION BY {{ g.partition_by }}
+                    ORDER BY `{{ g.merge_order_by }}` DESC
+                ) AS rn
+            FROM `{source}`
+{% if g.merge_filter %}
+            WHERE {{ g.merge_filter }}
+{% endif %}
+        )
+        WHERE rn = 1
+{% else %}
+        SELECT *
+        FROM `{source}`
+{% if g.merge_filter %}
+        WHERE {{ g.merge_filter }}
+{% endif %}
+{% endif %}
+    ) S ON {{ g.on_expr }}
+{% if g.merge_order_by %}
+    WHEN MATCHED AND T.`{{ g.merge_order_by }}` < S.`{{ g.merge_order_by }}` THEN
+{% else %}
+    WHEN MATCHED THEN
+{% endif %}
+        UPDATE SET {update_expr}
+    WHEN NOT MATCHED THEN
+        INSERT ({insert_columns})
+        VALUES ({insert_values})
+    """
+    logger.info("Running merge query...")
+    job = bq_client.query(query)
+    job.result()
+{% if sql_logger %}
+    capture.write_to_log(merge_to_main_table.__name__, query, "success", job.job_id)
+{% endif %}
+    logger.info(f"Merge completed: {job.num_dml_affected_rows} rows changed in {target}")
+    return job.num_dml_affected_rows
+{% else %}
+def insert_to_main_table(project, dataset, dataset_1, staging_table, target_table{% if g.truncate_target %}, truncate{% endif %}):
+    """Append the staged rows to the target table{% if g.truncate_target %} (truncate: the run's first file replaces its rows){% endif %}."""
+    target = f"{project}.{dataset}.{target_table}"
+    source = f"{project}.{dataset_1}.{staging_table}"
+    logger.info(f"Target table name: {target}")
+    logger.info(f"Source table name: {source}")
+
+    # First run: create the target table with the staging table's columns
+    bq_client.query(f"CREATE TABLE IF NOT EXISTS `{target}` LIKE `{source}`").result()
+{% if g.truncate_target %}
+    if truncate:
+        bq_client.query(f"TRUNCATE TABLE `{target}`").result()
+        logger.info(f"Truncated target table: {target}")
+{% endif %}
+
+    query = f"""
+    INSERT INTO `{target}`
+    SELECT *
+    FROM `{source}`
+{% if g.merge_filter %}
+    WHERE {{ g.merge_filter }}
+{% endif %}
+    """
+    logger.info("Running insert query...")
+    job = bq_client.query(query)
+    job.result()
+{% if sql_logger %}
+    capture.write_to_log(insert_to_main_table.__name__, query, "success", job.job_id)
+{% endif %}
+    logger.info(f"Inserted {job.num_dml_affected_rows} rows into {target}")
+    return job.num_dml_affected_rows
+{% endif %}
+{% if g.archive %}
+
+
+def archive_data_file(filename, gcs_bucket, gcs_archive_bucket, gcs_archive_folder):
+    """Move a processed file to the archive folder (copy, then delete the original)."""
+    source_bucket = storage_client.bucket(gcs_bucket)
+    source_blob = source_bucket.blob(filename)
+    archive_bucket = storage_client.bucket(gcs_archive_bucket)
+    archive_name = f"{gcs_archive_folder.strip('/')}/{os.path.basename(filename)}"
+    source_bucket.copy_blob(source_blob, archive_bucket, archive_name)
+    source_blob.delete()
+    logger.info(f"Archived {filename} -> gs://{gcs_archive_bucket}/{archive_name}")
+{% endif %}

@@ -1,0 +1,81 @@
+def main(args):
+
+    logger.info(f'Function {main.__name__} execution begin')
+    logger.info(f'Parms-> Environment: {args.environment}')
+
+    start = time.perf_counter()
+    environment = args.environment
+    config_file = args.cf
+{% if main.has_ingest %}
+    schema_file = args.ts
+{% endif %}
+{% if sql_logger %}
+
+    # global capture
+    global capture
+    capture = sql_logger.CaptureSQL(project_id, credentials, CONFIG["SCRIPT_NAME"], environment)
+{% endif %}
+
+    # Get the context from config file.
+    config_data = config.read_configuration(environment, config_file)
+    logger.info(f"Parms-> Read project: {config_data.get('read_project')}  Write project: {config_data.get('write_project')}")
+{% if main.has_ingest %}
+    table_def = config.read_table_definition(schema_file)
+{% endif %}
+{% for line in main.extract_lines %}
+    {{ line }}
+{% endfor %}
+{% if main.has_continue %}
+    failed_steps = []
+{% endif %}
+{% if main.collect_attachments %}
+    attachments = []
+{% endif %}
+
+    try:
+{% if main.secrets %}
+        # Secrets from Google Secret Manager (gsm_module): the whole payload of each; the steps pick what they need
+        gsm_project = config_data.get('gsm_project')
+{% for s in main.secrets %}
+        SECRETS[{{ s.name|py_str }}] = get_gsm_secret(gsm_project, {{ s.secret_id|py_str }}, {{ s.version|py_str }})
+{% endfor %}
+
+{% endif %}
+        # Step function calls go here
+{% for c in main.calls %}
+        # {{ c.label }}
+{% if not c.enabled %}
+        # {{ c.call }}
+{% elif c.on_failure == "continue" %}
+        try:
+            {{ c.call }}
+        except Exception:
+            logger.exception(f"Function {{ '{' }}{{ c.fn }}.__name__} failed; continuing with the next step")
+            failed_steps.append({{ c.fn|py_str }})
+{% else %}
+        {{ c.call }}
+{% endif %}
+
+{% endfor %}
+{% if main.has_continue %}
+        if failed_steps:
+            raise RuntimeError(f"Step(s) failed: {', '.join(failed_steps)}")
+{% endif %}
+{% if main.email_on_success %}
+
+        #email execution
+        email(config_data, environment, "SUCCESS"{% if main.collect_attachments %}, attachments=attachments{% endif %})
+{% endif %}
+{% if main.email_on_failure %}
+    except Exception:
+        logger.exception(f"Function {main.__name__} failed")
+        try:
+            email(config_data, environment, "FAILED")
+        except Exception:
+            logger.exception("The failure email could not be sent")
+        raise
+{% endif %}
+    finally:
+        execution_time = round(time.perf_counter() - start, 2)
+
+        logger.info(f"Function {main.__name__} execution end:  {execution_time} seconds.")

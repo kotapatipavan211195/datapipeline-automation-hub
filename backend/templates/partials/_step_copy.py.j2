@@ -1,0 +1,37 @@
+def {{ v.fn }}(config_data):
+    """{{ v.doc|py_docline }}"""
+
+    {{ v.log_begin }}
+
+    start = time.perf_counter()
+
+    # Break out configuration information
+    file_copy = config_data.get({{ v.config_key|py_str }}, {})
+{% if v.uses_date %}
+    sources = [source.format(date=date.today()) for source in file_copy.get('sources', [])]
+    destination = file_copy.get('destination').format(date=date.today())
+{% else %}
+    sources = file_copy.get('sources', [])
+    destination = file_copy.get('destination')
+{% endif %}
+
+    # Google Cloud CLI: gcloud storage (the successor of gsutil)
+    gcloud = shutil.which("gcloud")
+    if gcloud is None:
+        raise RuntimeError("gcloud CLI not found on PATH: install the Google Cloud CLI to use gcloud storage")
+    cmd = [gcloud, "storage", {{ v.operation|py_str }}{% for f in v.flags %}, {{ f|py_str }}{% endfor %}, *sources, destination]
+    try:
+        logger.info(f"Running: gcloud storage {{ v.operation }}{{ v.flags_text }} {' '.join(sources)} {destination}")
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+        for line in (result.stderr + result.stdout).splitlines():
+            if line.strip():
+                logger.info(line.strip())
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"gcloud storage {{ v.operation }} failed (exit code {e.returncode}): {(e.stderr or e.stdout or '').strip()}")
+    except Exception as e:
+        s = str(e)
+        raise RuntimeError(s)

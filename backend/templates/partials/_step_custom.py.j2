@@ -1,0 +1,29 @@
+def {{ v.fn }}(config_data):
+    """
+    {{ v.doc|py_docline }}
+
+    Args:
+        config_data (dict): Configuration data; this step's settings are under '{{ v.config_key }}'.
+    """
+    {{ v.log_begin }}
+
+    start = time.perf_counter()
+{% if v.uses_config and not smoke %}
+
+    # Break out configuration information
+    {{ v.config_key }} = config_data.get({{ v.config_key|py_str }}, {})
+{% endif %}
+
+    try:
+{% if smoke %}
+        logger.info({{ ("Offline smoke run: the custom code of " ~ v.fn ~ " is not executed (the lab test run executes it)")|py_str }})
+{% else %}
+{{ v.code_block }}
+{% endif %}
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+    except Exception as e:
+        s = str(e)
+        raise RuntimeError(s)

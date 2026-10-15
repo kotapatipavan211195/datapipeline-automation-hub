@@ -1,0 +1,42 @@
+{% include "partials/_setup.py.j2" %}
+
+
+"""
+    Step functions: main() calls them in this order
+"""
+{% if ingest %}
+{% include "partials/_ingest_helpers.py.j2" %}
+{% endif %}
+{% for v in steps %}
+
+
+{% if v.kind == "sql" %}
+{% include "partials/_step_sql.py.j2" %}
+{% elif v.kind == "export" %}
+{% include "partials/_step_export.py.j2" %}
+{% elif v.kind == "ingest" %}
+{% include "partials/_step_ingest.py.j2" %}
+{% elif v.kind == "copy" %}
+{% include "partials/_step_copy.py.j2" %}
+{% elif v.kind == "dq" %}
+{% include "partials/_step_dq.py.j2" %}
+{% elif v.kind == "custom" %}
+{% include "partials/_step_custom.py.j2" %}
+{% endif %}
+{% endfor %}
+{% if has_secrets %}
+
+
+{% include "partials/_secrets.py.j2" %}
+{% endif %}
+{% if has_email %}
+
+
+{% include "partials/_email.py.j2" %}
+{% endif %}
+
+
+{% include "partials/_main.py.j2" %}
+
+
+{% include "partials/_argparse.py.j2" %}

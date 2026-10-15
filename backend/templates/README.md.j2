@@ -1,0 +1,192 @@
+# {{ process }}
+
+{{ description }}
+{% if untested_reason %}
+
+> **Not tested in lab:** {{ untested_reason }}
+{% endif %}
+{% if ai_overview %}
+
+{{ ai_overview }}
+{% endif %}
+
+| | |
+|---|---|
+| Author(s) | {{ authors or "—" }} |
+| Reviewer(s) | {{ reviewers or "—" }} |
+| JIRA/SN # | {{ jira or "—" }} |
+| Owner | {{ owner or "—" }}{% if co_owners %} (co-owners: {{ co_owners | join(", ") }}){% endif %} |
+| Team | {{ team or "—" }} |
+| Script | `{{ script }}.py` with `{{ script }}.yaml`{% if schema_file %} and `{{ schema_file }}`{% endif %} |
+| Generated | {{ generator }} on {{ generated_on }} · spec `{{ spec_hash }}` |
+| ADC identity at generation | `{{ adc_email }}`{% if has_email %} (also the email sender){% endif %} |
+
+## Run
+
+```bash
+{% for line in run_lines %}
+{{ line }}
+{% endfor %}
+```
+
+The environment comes last and picks the block of `{{ script }}.yaml` (`gcp_projects.<environment>`). Credentials come from
+`google.auth.default()`: your gcloud login in lab (`gcloud auth application-default login`), the service account on
+Composer. The script imports the team's shared modules (`read_config_yaml`{% if sql_logger %}, `sql_logger`{% endif %}{% if has_secrets %}, `gsm_module`{% endif %}) from
+{% for p in module_paths %}`{{ p }}`{% if not loop.last %} / {% endif %}{% endfor %}.
+
+A failed step raises an error, so the process exits with a non-zero code and the orchestrator marks the task failed.
+Every step logs `Function <name> execution begin` / `execution end: <seconds> seconds.`, and `main` logs the total.
+
+## Environments
+
+{% if variables %}
+| Variable | Group | {% for env in envs %}{{ env_labels[env] }} | {% endfor %}Used in |
+|---|---|{% for env in envs %}---|{% endfor %}---|
+{% for v in variables %}
+| `{{ v.name }}` | {{ v.group }} | {% for env in envs %}`{{ v.values.get(env) or "—" }}` | {% endfor %}{{ v.used }} |
+{% endfor %}
+{% endif %}
+
+The hub only ever checks and test-runs **lab**; the **value** (prod) values are written into the YAML but never
+used by the hub.
+
+## What it does
+
+`main()` runs these steps in order. Each step is a plain function in `{{ script }}.py`.
+
+| # | Function | Type | What it does | On failure |
+|---|---|---|---|---|
+{% for s in steps %}
+| {{ s.position_label }} | `{{ s.fn }}` | {{ s.kind_label }} | {{ s.doc | replace("|", "\\|") }}{% if not s.enabled %} *(disabled)*{% endif %} | {{ "log and continue" if s.on_failure == "continue" else "stop" }} |
+{% endfor %}
+
+## Dependencies (source tables)
+
+Tables this process reads but does not build itself (lab names). They must exist, and be up to date, before a run.
+{% if tables.dependencies %}
+
+| Table (lab) | Read by | Template |
+|---|---|---|
+{% for t in tables.dependencies %}
+| `{{ t.resolved }}`{% if t.job_project %} (no project: the credentials' project){% endif %} | {% for s in t.read_by %}`{{ s }}`{% if not loop.last %}, {% endif %}{% endfor %} | {% if t.template != t.resolved %}`{{ t.template }}`{% else %}—{% endif %} |
+{% endfor %}
+{% else %}
+
+None: every table this process reads is built by an earlier step of the same process.
+{% endif %}
+
+## Target tables
+
+Tables this process creates or changes (lab names).
+{% if tables.targets %}
+
+| Table (lab) | Written by | How | Read afterwards by |
+|---|---|---|---|
+{% for t in tables.targets %}
+| `{{ t.resolved }}` | {% for s in t.written_by %}`{{ s }}`{% if not loop.last %}, {% endif %}{% endfor %} | {{ t.how | join("; ") }} | {% for s in t.read_after_write %}`{{ s }}`{% if not loop.last %}, {% endif %}{% else %}—{% endfor %} |
+{% endfor %}
+{% else %}
+
+None: this process does not write BigQuery tables.
+{% endif %}
+{% if tables.gcs_inputs %}
+
+### Source files
+
+| Step | Files (lab) | What |
+|---|---|---|
+{% for f in tables.gcs_inputs %}
+| `{{ f.step }}` | `{{ f.uri }}` | {{ f.role }} |
+{% endfor %}
+{% endif %}
+{% if tables.gcs_outputs %}
+
+### Output files
+
+| Step | Path (lab) | What |
+|---|---|---|
+{% for f in tables.gcs_outputs %}
+| `{{ f.step }}` | `{{ f.uri }}` | {{ f.role }} |
+{% endfor %}
+{% endif %}
+
+## Process steps in detail
+{% for s in steps if s.enabled %}
+
+### {{ s.position }}. `{{ s.fn }}` · {{ s.kind_label }}
+
+{{ s.summary or s.doc }}
+
+| | |
+|---|---|
+{% for label, value in s.details %}
+| {{ label }} | {{ value | replace("|", "\\|") }} |
+{% endfor %}
+{% endfor %}
+{% set disabled = steps | rejectattr("enabled") | map(attribute="fn") | list %}
+{% if disabled %}
+
+Disabled steps (their calls are commented out in `main()`): `{{ disabled | join("`, `") }}`
+{% endif %}
+{% if dq_checks %}
+
+## Data-quality checks
+
+A failed check with severity **error** stops the run; **warn** only logs a warning.
+
+| Step | Check | Expectation | Severity |
+|---|---|---|---|
+{% for c in dq_checks %}
+| `{{ c.step }}` | {{ c.name }} | value {{ c.op }} {{ c.threshold }} | {{ c.severity }} |
+{% endfor %}
+{% endif %}
+{% if sql_logger %}
+
+## SQL log
+
+Every SQL statement the script runs is captured with the team's `sql_logger` module (`CaptureSQL.write_to_log`)
+in `<credentials' project>.pipeline_audit.pipeline_sql_log`, with status `success` or `failure`, the BigQuery job id,
+the environment and the Composer `DAG_ID` / `TASK_ID` when set.
+{% endif %}
+{% if has_email %}
+
+## Notification email
+
+Sent through the internal mail relay (no login) from `{{ adc_email }}` to the
+`email.receiver` list of the environment's block{% if email_when %}, {{ email_when }}{% endif %}.
+{% if has_attachments %}Attachments: the `email.attachment` paths{% if attach_exports %} plus the files written by {% for fn in attach_exports %}`{{ fn }}`{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.{% endif %}{% if file_summary %} The body lists the files the run loaded and exported: file name, rows, and the table or gs:// path.{% endif %}
+{% endif %}
+{% if has_secrets %}
+
+## Secrets (Google Secret Manager)
+
+Read at the start of `main()` by `get_gsm_secret()` with the team's `gsm_module`, from the environment's
+`gsm_project`. `SECRETS['<name>']` holds the whole payload: a dict for JSON (e.g.
+`{"api_credentials": [{"api": "…"}]}`), else the text. The steps pick what they need from it; the payload keys they
+read (e.g. `secret_list_key: api_credentials`, `secret_value_key: api`) are settings in the YAML, so a change of the
+secret's layout is a YAML change. The identity running the script needs `roles/secretmanager.secretAccessor` on them.
+
+| Name | Secret id | Version | What it holds |
+|---|---|---|---|
+{% for s in secrets %}
+| `{{ s.name }}` | `{{ s.secret_id }}` | {{ s.version }} | {{ s.description or "—" }} |
+{% endfor %}
+{% endif %}
+{% if has_copy %}
+
+## Copying files
+
+Copy steps run the Google Cloud CLI (`gcloud storage cp | mv | rsync`, the successor of `gsutil`), so `gcloud` must be
+installed and on the PATH of the machine that runs the script, logged in as the same identity.
+{% endif %}
+
+## Files
+
+| File | What |
+|---|---|
+| `{{ script }}.py` | the pipeline (prod template: header, module imports, one function per step, `main(args)`) |
+| `{{ script }}.yaml` | configuration: one block per environment under `gcp_projects` |
+{% if schema_file %}
+| `{{ schema_file }}` | table definition for the file ingestion (`table_definition.table_name` / `table_schema`) |
+{% endif %}
+| `requirements.txt` | Python packages |

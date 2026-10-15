@@ -1,0 +1,6 @@
+# Runtime dependencies for dl_member_geocode.py (Python 3.9+); the team modules come from /data/data_eng/py_scripts/modules
+google-cloud-bigquery>=3.25
+google-cloud-secret-manager>=2.20
+google-auth>=2.30
+PyYAML>=6.0
+requests>=2.31

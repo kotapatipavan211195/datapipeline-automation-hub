@@ -1,0 +1,9 @@
+# Table definition for dl_customer_snapshot.py (-ts dl_customer_snapshot_table_schema.yaml)
+# 
+table_definition:
+  table_name: customer_stg
+  table_schema:
+    customer_id: STRING
+    email: STRING
+    attributes: JSON
+    updated_at: TIMESTAMP

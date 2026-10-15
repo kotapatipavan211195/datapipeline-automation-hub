@@ -1,0 +1,279 @@
+{
+  "metadata": {
+    "name": "sales_daily",
+    "description": "Loads the daily store sales CSV, builds the daily sales mart, exports it for the finance team and checks quality.",
+    "owner": "data.engineer@example.com",
+    "team": "Retail Analytics",
+    "tags": [
+      "sales",
+      "daily"
+    ],
+    "authors": [
+      "P10001"
+    ],
+    "reviewers": [
+      "P10002"
+    ],
+    "jira": "DE-2001",
+    "created_on": "2026-01-05",
+    "updates": [
+      {
+        "date": "2026-10-13",
+        "pid": "P10001",
+        "note": "Moved to the team script standard"
+      }
+    ]
+  },
+  "variables": [
+    {
+      "name": "read_project",
+      "group": "project",
+      "values": {
+        "lab": "acme-analytics-dev",
+        "value": "acme-analytics-prod",
+        "qa": ""
+      },
+      "description": "project the SQL reads from"
+    },
+    {
+      "name": "write_project",
+      "group": "project",
+      "values": {
+        "lab": "acme-analytics-dev",
+        "value": "acme-analytics-prod",
+        "qa": ""
+      },
+      "description": "project the process writes to"
+    },
+    {
+      "name": "raw_dataset",
+      "group": "dataset",
+      "values": {
+        "lab": "raw_sales",
+        "value": "raw_sales",
+        "qa": ""
+      },
+      "description": "landing dataset"
+    },
+    {
+      "name": "mart_dataset",
+      "group": "dataset",
+      "values": {
+        "lab": "sales_mart",
+        "value": "sales_mart",
+        "qa": ""
+      },
+      "description": "reporting dataset"
+    },
+    {
+      "name": "landing_bucket",
+      "group": "bucket",
+      "values": {
+        "lab": "acme-landing-dev",
+        "value": "acme-landing-prod",
+        "qa": ""
+      },
+      "description": "where store files arrive"
+    },
+    {
+      "name": "export_bucket",
+      "group": "bucket",
+      "values": {
+        "lab": "acme-exports-dev",
+        "value": "acme-exports-prod",
+        "qa": ""
+      },
+      "description": "finance hand-off bucket"
+    },
+    {
+      "name": "reference_project",
+      "group": "project",
+      "values": {
+        "lab": "acme-reference-prod",
+        "value": "acme-reference-prod",
+        "qa": ""
+      },
+      "description": "GCP project (found in the SQL of build_sales_daily_agg)"
+    }
+  ],
+  "secrets": [],
+  "email": {
+    "enabled": true,
+    "receivers": {
+      "lab": "retail-analytics-dev@acme.example.com",
+      "value": "retail-analytics@acme.example.com"
+    },
+    "send_on": {
+      "failure": true,
+      "success": true
+    },
+    "subject": "{script} | {status} | {environment}",
+    "attachments": [],
+    "message": "Store sales for yesterday were loaded and exported to finance (status {status})."
+  },
+  "steps": [
+    {
+      "type": "ingest",
+      "function_name": "ingest_store_sales_files",
+      "description": "Load the store sales CSV files for the run date into raw_sales.store_sales",
+      "enabled": true,
+      "on_failure": "stop",
+      "read_bucket": "{landing_bucket}",
+      "read_path": "sales/incoming",
+      "filename": "store_sales_",
+      "file_format": "CSV",
+      "header": "0",
+      "skiprows": "None",
+      "separator": ",",
+      "columns": [
+        {
+          "name": "store_id",
+          "type": "INTEGER",
+          "mode": "REQUIRED",
+          "description": "store number"
+        },
+        {
+          "name": "sku",
+          "type": "STRING",
+          "mode": "REQUIRED"
+        },
+        {
+          "name": "sold_at",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "sale_date",
+          "type": "DATE",
+          "mode": "REQUIRED"
+        },
+        {
+          "name": "quantity",
+          "type": "INTEGER"
+        },
+        {
+          "name": "amount",
+          "type": "NUMERIC"
+        },
+        {
+          "name": "store_code",
+          "type": "STRING"
+        }
+      ],
+      "table_name": "store_sales_stg",
+      "target_table": "store_sales",
+      "staging_dataset": "{raw_dataset}",
+      "target_dataset": "{raw_dataset}",
+      "history": true,
+      "load_mode": "merge",
+      "archive": true,
+      "archive_bucket": "{landing_bucket}",
+      "archive_path": "sales/archive",
+      "on_no_files": "email",
+      "merge_keys": [
+        "store_id",
+        "sku",
+        "sold_at"
+      ],
+      "merge_order_by": null
+    },
+    {
+      "type": "sql",
+      "function_name": "build_sales_daily_agg",
+      "description": "MERGE the day's raw sales into sales_mart.sales_daily (one row per store per day)",
+      "original_sql": "MERGE `acme-analytics-dev.sales_mart.sales_daily` T USING (SELECT s.store_id, s.sale_date, SUM(s.amount) AS total_amount, SUM(s.quantity) AS units FROM `acme-analytics-dev.raw_sales.store_sales` s JOIN `acme-reference-prod.reference.stores` st ON st.store_id = s.store_id AND st.is_active WHERE s.sale_date = '2026-01-14' AND REGEXP_CONTAINS(s.store_code, r'^[A-Z]{3}\\d+$') AND s.amount >= 0.01 GROUP BY 1, 2) S ON T.store_id = S.store_id AND T.sale_date = S.sale_date WHEN MATCHED THEN UPDATE SET total_amount = S.total_amount, units = S.units WHEN NOT MATCHED THEN INSERT ROW",
+      "sql": "MERGE `${write_project}.${mart_dataset}.sales_daily` T\nUSING (\n  SELECT s.store_id, s.sale_date, SUM(s.amount) AS total_amount, SUM(s.quantity) AS units\n  FROM `${write_project}.${raw_dataset}.store_sales` s\n  JOIN `${reference_project}.reference.stores` st ON st.store_id = s.store_id AND st.is_active\n  WHERE s.sale_date = @run_date\n    AND REGEXP_CONTAINS(s.store_code, r'^[A-Z]{3}\\d+$')\n    AND s.amount >= @min_amount\n  GROUP BY 1, 2\n) S\nON T.store_id = S.store_id AND T.sale_date = S.sale_date\nWHEN MATCHED THEN UPDATE SET total_amount = S.total_amount, units = S.units\nWHEN NOT MATCHED THEN INSERT ROW",
+      "parameters": [
+        {
+          "name": "run_date",
+          "bq_type": "DATE",
+          "source": "today_offset",
+          "original_literal": "'2026-01-14'",
+          "offset_days": -1
+        },
+        {
+          "name": "min_amount",
+          "bq_type": "NUMERIC",
+          "source": "config",
+          "default": "0.01",
+          "original_literal": "0.01"
+        }
+      ],
+      "statement_kind": "MERGE",
+      "sources": [
+        "{write_project}.{raw_dataset}.store_sales",
+        "{reference_project}.reference.stores"
+      ],
+      "targets": [
+        "{write_project}.{mart_dataset}.sales_daily"
+      ]
+    },
+    {
+      "type": "export",
+      "function_name": "export_sales_daily_to_finance",
+      "description": "Export the day's sales mart rows to the finance bucket as gzip CSV",
+      "source_kind": "query",
+      "source_sql": "SELECT store_id, sale_date, total_amount, units\nFROM `${write_project}.${mart_dataset}.sales_daily`\nWHERE sale_date = @run_date\nORDER BY store_id",
+      "parameters": [
+        {
+          "name": "run_date",
+          "bq_type": "DATE",
+          "source": "today_offset",
+          "offset_days": -1
+        }
+      ],
+      "file_format": "CSV",
+      "compression": "GZIP",
+      "config_key": "ftp",
+      "bucket": "{export_bucket}",
+      "path": "finance/sales_daily",
+      "file_name": "sales_daily_",
+      "date_suffix": "%Y%m%d",
+      "sharded": true,
+      "attach_to_email": true
+    },
+    {
+      "type": "dq",
+      "function_name": "check_sales_daily_quality",
+      "description": "Row count, key columns not null, one row per store per day",
+      "checks": [
+        {
+          "kind": "row_count_min",
+          "table": "{write_project}.{mart_dataset}.sales_daily",
+          "min_rows": 1,
+          "where": "sale_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)"
+        },
+        {
+          "kind": "not_null",
+          "table": "{write_project}.{mart_dataset}.sales_daily",
+          "columns": [
+            "store_id",
+            "total_amount"
+          ],
+          "where": "sale_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)"
+        },
+        {
+          "kind": "unique",
+          "table": "{write_project}.{mart_dataset}.sales_daily",
+          "columns": [
+            "store_id",
+            "sale_date"
+          ],
+          "where": "sale_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)"
+        },
+        {
+          "kind": "freshness",
+          "table": "{write_project}.{raw_dataset}.store_sales",
+          "columns": [
+            "sold_at"
+          ],
+          "max_age_hours": 48,
+          "severity": "warn"
+        }
+      ]
+    }
+  ],
+  "environments": {
+    "qa_enabled": false
+  },
+  "spec_version": 3
+}

@@ -1,0 +1,79 @@
+# {{ stem }}
+
+{{ description or "Pipeline script." }}
+
+Enhanced to the team script standard by {{ generator }} on {{ today }}: {{ file_name }} was rewritten by Gemini
+({{ model }}) and accepted only because every check below passed. Review the diff before you deploy it.
+
+| | |
+|---|---|
+| Author(s) | {{ authors or "TODO: developer PID(s)" }} |
+| Reviewer(s) | {{ reviewers or "—" }} |
+| JIRA/SN # | {{ jira or "TODO" }} |
+
+The script's `'''` header block was written by the hub from these values (and the Updates line of this enhancement).
+{% if credentials %}
+
+## Credentials
+
+The old script reached Google with:
+{% for c in credentials %}
+- {{ c }}
+{% endfor %}
+
+The enhanced script uses ADC (`credentials, project_id = google.auth.default()`): your own IAM identity when you run
+it in lab, the Composer service account in value. Delete the key file and any `GOOGLE_APPLICATION_CREDENTIALS`
+setting once it runs, and check that both identities have the BigQuery / GCS roles the script needs.
+{% endif %}
+
+## Run
+
+```bash
+{% for line in run_lines %}
+{{ line }}
+{% endfor %}
+```
+
+The environment comes last and picks the block of `{{ stem }}.yaml` (`gcp_projects.<environment>`).
+
+## What changed
+
+{% for c in changes %}
+- {{ c }}
+{% else %}
+- (no change list was returned)
+{% endfor %}
+
+## Still to do
+
+{% for t in todos %}
+- [ ] {{ t }}
+{% else %}
+- nothing listed
+{% endfor %}
+
+## Team standard
+
+| Rule | Before | After |
+|---|---|---|
+{% for before, after in standards %}
+| {{ before.title }} | {{ "✓" if before.ok else "✗ " ~ before.detail }} | {{ "✓" if after and after.ok else ("✗ " ~ after.detail if after else "—") }} |
+{% endfor %}
+
+## Checks the hub ran
+
+| Check | Result |
+|---|---|
+{% for c in checks %}
+| {{ c.name }} | {{ "passed" if c.ok else "failed: " ~ c.detail }} |
+{% endfor %}
+
+## Files
+
+| File | What |
+|---|---|
+| `{{ stem }}.py` | the enhanced script |
+{% if has_yaml %}
+| `{{ stem }}.yaml` | configuration: one block per environment under `gcp_projects` |
+{% endif %}
+| `requirements.txt` | Python packages (check the ones marked) |

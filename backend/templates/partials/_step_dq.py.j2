@@ -1,0 +1,45 @@
+def {{ v.fn }}({{ v.args|join(", ") }}):
+    """{{ v.doc|py_docline }}"""
+
+    {{ v.log_begin }}
+
+    start = time.perf_counter()
+{% if v.breakout %}
+
+    # Break out configuration information
+{% for line in v.breakout %}
+    {{ line }}
+{% endfor %}
+{% endif %}
+    failed_checks = []
+    try:
+{% for c in v.checks %}
+        # Check {{ loop.index }} ({{ c.severity }}): passes when the value {{ c.op }} {{ c.threshold }}
+        check_name = {{ c.name|py_str }}
+        sql = {{ c.sql_literal }}
+        response = bq_client.query(sql)  # Google API to run SQL Code
+        rows = list(response.result())
+{% if sql_logger %}
+        capture.write_to_log(f"{{ '{' }}{{ v.fn }}.__name__}_check_{{ loop.index }}", sql, "success", response.job_id)
+{% endif %}
+        value = rows[0]["value"] if rows else None
+        if value is not None and value {{ c.op }} {{ c.threshold }}:
+            logger.info(f"Data-quality check passed: {check_name} = {value}")
+        else:
+{% if c.severity == "error" %}
+            logger.error(f"Data-quality check FAILED: {check_name} = {value} (expected {{ c.op }} {{ c.threshold }})")
+            failed_checks.append(check_name)
+{% else %}
+            logger.warning(f"Data-quality check failed (warning only): {check_name} = {value} (expected {{ c.op }} {{ c.threshold }})")
+{% endif %}
+
+{% endfor %}
+        if failed_checks:
+            raise RuntimeError(f"Data-quality check(s) failed: {', '.join(failed_checks)}")
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+    except Exception as e:
+        s = str(e)
+        raise RuntimeError(s)

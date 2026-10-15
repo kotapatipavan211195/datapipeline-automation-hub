@@ -1,0 +1,9 @@
+# Table definition for dl_member_payments_raw.py (-ts dl_member_payments_raw_table_schema.yaml)
+# 
+table_definition:
+  table_name: member_payments_raw
+  table_schema:
+    member_id: STRING
+    payment_date: DATE
+    amount: NUMERIC
+    channel: STRING

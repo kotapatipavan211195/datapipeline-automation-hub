@@ -1,0 +1,190 @@
+{
+  "metadata": {
+    "name": "customer_snapshot",
+    "script_name": "dl_customer_snapshot",
+    "description": "Prepares a staging table, loads the CRM customer extract (pipe-delimited .txt), merges it into the customer dimension, publishes a Parquet snapshot and a .txt contact list.",
+    "owner": "crm.team@example.com",
+    "team": "CRM",
+    "authors": [
+      "P20001"
+    ],
+    "jira": "SN-3001",
+    "created_on": null,
+    "updates": []
+  },
+  "variables": [
+    {
+      "name": "read_project",
+      "group": "project",
+      "values": {
+        "lab": "acme-analytics-dev",
+        "value": "acme-analytics-prod",
+        "qa": ""
+      },
+      "description": "project the SQL reads from"
+    },
+    {
+      "name": "write_project",
+      "group": "project",
+      "values": {
+        "lab": "acme-analytics-dev",
+        "value": "acme-analytics-prod",
+        "qa": ""
+      },
+      "description": "project the process writes to"
+    },
+    {
+      "name": "crm_dataset",
+      "group": "dataset",
+      "values": {
+        "lab": "crm",
+        "value": "crm",
+        "qa": ""
+      },
+      "description": ""
+    },
+    {
+      "name": "crm_bucket",
+      "group": "bucket",
+      "values": {
+        "lab": "acme-crm-dropzone",
+        "value": "acme-crm-dropzone-prod",
+        "qa": ""
+      },
+      "description": ""
+    }
+  ],
+  "steps": [
+    {
+      "type": "ingest",
+      "function_name": "load_crm_customer_extract",
+      "description": "Load the latest pipe-delimited CRM customer extract (.txt) into crm.customer_stg",
+      "enabled": true,
+      "on_failure": "stop",
+      "read_bucket": "{crm_bucket}",
+      "read_path": "exports/customers",
+      "filename": "customers_",
+      "file_format": "TXT",
+      "header": "0",
+      "skiprows": "None",
+      "separator": "|",
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "STRING",
+          "mode": "REQUIRED"
+        },
+        {
+          "name": "email",
+          "type": "STRING"
+        },
+        {
+          "name": "attributes",
+          "type": "JSON"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMP"
+        }
+      ],
+      "table_name": "customer_stg",
+      "target_table": "customer_extract",
+      "staging_dataset": "{crm_dataset}",
+      "target_dataset": "{crm_dataset}",
+      "history": false,
+      "load_mode": "truncate",
+      "archive": true,
+      "archive_bucket": "{crm_bucket}",
+      "archive_path": "archive",
+      "on_no_files": "warn"
+    },
+    {
+      "type": "sql",
+      "function_name": "merge_customer_dimension",
+      "description": "Upsert staged customers into crm.dim_customer and log the change count",
+      "sql": "DECLARE changed INT64 DEFAULT 0;\nMERGE `${write_project}.${crm_dataset}.dim_customer` d\nUSING `${write_project}.${crm_dataset}.customer_stg` s\nON d.customer_id = s.customer_id\nWHEN MATCHED AND s.updated_at > d.updated_at THEN UPDATE SET email = s.email, attributes = s.attributes, updated_at = s.updated_at\nWHEN NOT MATCHED THEN INSERT (customer_id, email, attributes, updated_at) VALUES (s.customer_id, s.email, s.attributes, s.updated_at);\nSET changed = @@row_count;\nSELECT changed AS rows_changed, JSON '{\"source\": \"crm\"}' AS meta;",
+      "statement_kind": "SCRIPT",
+      "sources": [
+        "{write_project}.{crm_dataset}.customer_stg"
+      ],
+      "targets": [
+        "{write_project}.{crm_dataset}.dim_customer"
+      ],
+      "parameters": []
+    },
+    {
+      "type": "export",
+      "function_name": "publish_customer_snapshot",
+      "description": "Publish the full customer dimension as Parquet for downstream teams",
+      "source_kind": "table",
+      "source_table": "{write_project}.{crm_dataset}.dim_customer",
+      "file_format": "PARQUET",
+      "compression": "SNAPPY",
+      "on_failure": "continue",
+      "config_key": "ftp",
+      "bucket": "{crm_bucket}",
+      "path": "snapshots/dim_customer",
+      "file_name": "dim_customer_",
+      "date_suffix": "%Y%m%d",
+      "sharded": true,
+      "parameters": []
+    },
+    {
+      "type": "export",
+      "function_name": "export_customer_contacts_txt",
+      "description": "Write today's changed customer contacts as a pipe-delimited .txt file for the mailing vendor",
+      "source_kind": "query",
+      "source_sql": "SELECT customer_id, email, updated_at\nFROM `${write_project}.${crm_dataset}.dim_customer`\nWHERE DATE(updated_at) = @run_date",
+      "parameters": [
+        {
+          "name": "run_date",
+          "bq_type": "DATE",
+          "source": "today",
+          "offset_days": 0
+        }
+      ],
+      "file_format": "TXT",
+      "field_delimiter": "|",
+      "print_header": true,
+      "config_key": "ftp_contacts",
+      "bucket": "{crm_bucket}",
+      "path": "outbound/contacts",
+      "file_name": "customer_contacts_",
+      "date_suffix": "%Y_%m_%d",
+      "sharded": true
+    },
+    {
+      "type": "sql",
+      "function_name": "refresh_customer_counts",
+      "description": "Rebuild the customer counts report table",
+      "enabled": false,
+      "sql": "SELECT COUNT(*) AS customers FROM `${write_project}.${crm_dataset}.dim_customer`",
+      "statement_kind": "SELECT",
+      "destination_table": "{write_project}.{crm_dataset}.customer_counts",
+      "write_mode": "truncate",
+      "parameters": [],
+      "targets": [],
+      "sources": []
+    },
+    {
+      "type": "copy",
+      "function_name": "copy_contacts_to_share",
+      "description": "Copy the contact files to the vendor share on the pipeline server",
+      "operation": "cp",
+      "sources": [
+        "gs://{crm_bucket}/outbound/contacts/customer_contacts_{date:%Y_%m_%d}-*.txt"
+      ],
+      "destination": "/data/outbound/vendor_share/",
+      "no_clobber": true,
+      "on_failure": "continue"
+    }
+  ],
+  "environments": {
+    "qa_enabled": false
+  },
+  "secrets": [],
+  "email": {
+    "enabled": false
+  },
+  "spec_version": 3
+}

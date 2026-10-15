@@ -1,0 +1,56 @@
+# Module paths -do not alter unless you know what you are doing!
+{% for p in module_paths %}
+sys.path.insert(0, {{ p|py_str }})
+{% endfor %}
+
+from modules import read_config_yaml as config
+{% if has_secrets %}
+from modules import gsm_module as gsm
+{% else %}
+# from modules import gsm_module as gsm  # TODO: Developer uncomment out here if you are using this for source system connections
+{% endif %}
+{% if sql_logger %}
+from modules import sql_logger
+{% endif %}
+
+# Suppress UserWarnings
+warnings.filterwarnings("ignore", category=UserWarning, module="google.auth")
+
+"""
+Get credentials for impersonation.
+credentials = Developer IAM when running in lab/dev.  Service Account role when running in value/prod on Composer
+project_id = Developer assigned via gcloud.  Type gcloud config configurations list to see assigned.
+             Use this variable for instantiating GCP API Clients as needed.  Not need for GSM module
+"""
+credentials, project_id = google.auth.default()
+bq_client = bigquery.Client(project=project_id, credentials=credentials)  # Instantiate a BQ Client
+{% if uses_gcs %}
+storage_client = storage.Client(project=project_id, credentials=credentials)  # Instantiate a Storage Client
+{% endif %}
+
+# Configuration constants
+CONFIG = {
+    "LOG_FORMAT": "%(asctime)s - %(levelname)s - %(message)s",
+    "LOG_LEVEL": logging.INFO,
+    "SCRIPT_NAME": os.path.basename(__file__),
+    "EXEC_DATETIME": datetime.now(),
+}
+
+# Set up logging
+logging.basicConfig(format=CONFIG["LOG_FORMAT"], level=CONFIG["LOG_LEVEL"])
+logger = logging.getLogger(CONFIG["SCRIPT_NAME"])
+{% if sql_logger %}
+
+# SQL capture (sql_logger module): created in main() once the environment is known
+capture = None
+{% endif %}
+{% if has_secrets %}
+
+# Secrets read in main() from Google Secret Manager (gsm_module), by name: the whole payload (a dict for JSON)
+SECRETS = {}
+{% endif %}
+{% if file_summary %}
+
+# Files loaded and exported by this run (file, rows, where to): listed in the email
+FILE_SUMMARY = []
+{% endif %}

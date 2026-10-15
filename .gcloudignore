@@ -1,0 +1,8 @@
+# Files Cloud Build must not upload
+.git
+.gitignore
+.venv/
+output/
+**/__pycache__/
+**/.ruff_cache/
+**/.DS_Store

@@ -1,0 +1,21 @@
+# Runtime dependencies for {{ script }}.py (Python 3.9+); the team modules come from /data/data_eng/py_scripts/modules
+google-cloud-bigquery>=3.25
+{% if uses_gcs %}
+google-cloud-storage>=2.18
+{% endif %}
+{% if has_secrets %}
+google-cloud-secret-manager>=2.20
+{% endif %}
+google-auth>=2.30
+PyYAML>=6.0
+{% if uses_pandas %}
+pandas>=2.0
+pyarrow>=14.0
+db-dtypes>=1.2
+{% endif %}
+{% if uses_excel %}
+openpyxl>=3.1
+{% endif %}
+{% for line in extra %}
+{{ line }}
+{% endfor %}

@@ -1,0 +1,27 @@
+# Datapipeline Automation Hub service: REST API + NiceGUI web UI + generator engine
+fastapi>=0.115
+uvicorn[standard]>=0.30
+nicegui>=3.0,<4
+python-multipart>=0.0.9
+pydantic>=2.13
+pydantic-settings>=2.5
+jinja2>=3.1
+pyyaml>=6.0
+sqlglot>=30.12,<31
+black>=24.8
+ruff>=0.6
+google-genai>=2.24
+google-auth>=2.30
+requests>=2.32
+google-cloud-bigquery>=3.45
+google-cloud-storage>=3.12
+google-cloud-logging>=3.11
+google-cloud-secret-manager>=2.20
+pyarrow>=17.0
+# smoke runs and lab test runs execute generated scripts with this interpreter (file ingestion uses pandas)
+pandas>=2.2
+db-dtypes>=1.3
+openpyxl>=3.1  # Excel (.xlsx) samples, ingestion and exports
+# the hub's own tests
+pytest>=8.0
+pytest-asyncio>=0.24

@@ -1,0 +1,59 @@
+{
+  "spec_version": 3,
+  "metadata": {
+    "name": "member_fixed_width_ingest",
+    "script_name": "dl_member_fixed_width_ingest",
+    "description": "Loads the daily fixed-width member file from the mainframe extract: each line holds the member id, name, status, join date and balance at fixed positions. The rows go to a staging table, a history table and are merged into the member table by member id.",
+    "owner": "pipeline.developer@example.com",
+    "team": "Membership",
+    "tags": ["ingestion", "fixed width"],
+    "authors": ["P10000"],
+    "reviewers": [],
+    "jira": "DE-2210",
+    "created_on": "2026-10-14",
+    "updates": []
+  },
+  "environments": {"qa_enabled": false},
+  "variables": [
+    {"name": "read_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "write_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "landing_bucket", "group": "bucket", "values": {"lab": "demo_file_test_bucket", "value": "value-gcp-insights"}},
+    {"name": "landing_path", "group": "other", "values": {"lab": "member_extract", "value": "inbound/member_extract"}},
+    {"name": "archive_path", "group": "other", "values": {"lab": "member_extract/Archive", "value": "Archive/inbound/member_extract"}},
+    {"name": "temporary_dataset", "group": "dataset", "values": {"lab": "clubwide", "value": "discovery05"}},
+    {"name": "target_dataset", "group": "dataset", "values": {"lab": "clubwide", "value": "membership01"}}
+  ],
+  "secrets": [],
+  "email": {"enabled": false},
+  "steps": [
+    {
+      "type": "ingest",
+      "function_name": "ingest_member_extract",
+      "description": "Load the fixed-width member extract into staging, history and the member table, then archive it",
+      "read_bucket": "{landing_bucket}",
+      "read_path": "{landing_path}",
+      "filename": "MBR_EXTRACT_",
+      "file_format": "FIXED",
+      "header": "None",
+      "skiprows": "None",
+      "columns": [
+        {"name": "member_id", "type": "STRING", "width": 10},
+        {"name": "member_name", "type": "STRING", "width": 30},
+        {"name": "status_code", "type": "STRING", "width": 2},
+        {"name": "join_date", "type": "DATE", "width": 10},
+        {"name": "balance", "type": "NUMERIC", "width": 12},
+        {"name": "visits", "type": "INTEGER", "width": 5}
+      ],
+      "table_name": "member_extract",
+      "target_table": "member_extract_daily",
+      "staging_dataset": "{temporary_dataset}",
+      "target_dataset": "{target_dataset}",
+      "history": true,
+      "load_mode": "merge",
+      "merge_keys": ["member_id"],
+      "archive": true,
+      "archive_path": "{archive_path}",
+      "on_no_files": "warn"
+    }
+  ]
+}

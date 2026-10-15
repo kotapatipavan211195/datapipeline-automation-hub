@@ -1,0 +1,72 @@
+{
+  "spec_version": 3,
+  "metadata": {
+    "name": "strategic_template",
+    "script_name": "dl_strategic_pipeline_template",
+    "description": "Builds the prod_script_test table from the online quote conversion model scores, extracts the active members table to the FTP bucket as a dated .txt file and emails it to the team.",
+    "owner": "pipeline.developer@example.com",
+    "team": "Data Research & Analytics",
+    "tags": ["template", "strategic"],
+    "authors": ["P10000"],
+    "reviewers": [],
+    "jira": "DE-1234",
+    "created_on": "2026-10-13",
+    "updates": []
+  },
+  "environments": {"qa_enabled": false},
+  "variables": [
+    {"name": "read_project", "group": "project", "values": {"lab": "value-confidential", "value": "value-confidential"},
+     "description": "project the SQL reads from"},
+    {"name": "write_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"},
+     "description": "project the process writes to"},
+    {"name": "w_model_scores_dataset", "group": "dataset", "values": {"lab": "lab_w_model_scores", "value": "w_model_scores"},
+     "description": "model score tables"},
+    {"name": "strategic_dataset", "group": "dataset", "values": {"lab": "lab_strategic", "value": "strategic"},
+     "description": "strategic marts"},
+    {"name": "membership_dataset", "group": "dataset", "values": {"lab": "lab_membership", "value": "membership"},
+     "description": "membership tables"},
+    {"name": "ftp_bucket", "group": "bucket", "values": {"lab": "demo_file_test_bucket", "value": "value-gcp-insights"},
+     "description": "outbound FTP bucket"},
+    {"name": "ftp_path", "group": "other", "values": {"lab": "outbound/test", "value": "outbound/rpm"},
+     "description": "outbound folder"}
+  ],
+  "secrets": [],
+  "email": {
+    "enabled": true,
+    "receivers": {"lab": "pipeline.developer@example.com", "value": "pipeline.developer@example.com, analytics-team@example.com"},
+    "send_on": {"failure": true, "success": true},
+    "subject": "{script} | {status} | {environment}",
+    "message": "The active members extract for {date:%Y-%m-%d} is attached.",
+    "attachments": []
+  },
+  "steps": [
+    {
+      "type": "sql",
+      "function_name": "build_prod_script_test",
+      "description": "Rebuild prod_script_test from the latest online quote conversion predictions",
+      "original_sql": "create or replace table `demo-analytics-dev.lab_strategic.prod_script_test` as\nselect * from `demo-analytics-dev.lab_w_model_scores.prediction_ins_auto_online_quote_conversion`\nwhere score_date >= '2026-10-01'\nlimit 100",
+      "sql": "create or replace table `${write_project}.${strategic_dataset}.prod_script_test` as\nselect * from `${write_project}.${w_model_scores_dataset}.prediction_ins_auto_online_quote_conversion`\nwhere score_date >= @score_start\nlimit 100",
+      "parameters": [
+        {"name": "score_start", "bq_type": "DATE", "source": "month_start", "original_literal": "'2026-10-01'",
+         "description": "first day of this month"}
+      ],
+      "statement_kind": "DDL"
+    },
+    {
+      "type": "export",
+      "function_name": "extract_data_file_csv",
+      "description": "Extract the active members table to the FTP bucket as a dated comma-delimited .txt file",
+      "config_key": "ftp",
+      "source_kind": "table",
+      "source_table": "{write_project}.{membership_dataset}.ms_acq_dm_active_members",
+      "bucket": "{ftp_bucket}",
+      "path": "{ftp_path}",
+      "file_name": "ms_acq_dm_active_members_",
+      "date_suffix": "%Y_%m_%d",
+      "file_format": "TXT",
+      "field_delimiter": ",",
+      "print_header": true,
+      "attach_to_email": true
+    }
+  ]
+}

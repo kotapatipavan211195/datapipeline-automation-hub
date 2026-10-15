@@ -1,0 +1,72 @@
+{
+  "spec_version": 3,
+  "process_type": "pipeline",
+  "metadata": {
+    "name": "member_payments_raw",
+    "script_name": "dl_member_payments_raw",
+    "description": "Loads the daily member payment files as they are (raw staging table plus history, no target table), then builds the payment summary from this run's rows. The email lists every file and its row count.",
+    "owner": "pipeline.developer@example.com",
+    "team": "Membership",
+    "tags": ["ingestion", "raw"],
+    "authors": ["P10000"],
+    "reviewers": [],
+    "jira": "DE-2310",
+    "created_on": "2026-10-15",
+    "updates": []
+  },
+  "environments": {"qa_enabled": false},
+  "variables": [
+    {"name": "read_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "write_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "landing_bucket", "group": "bucket", "values": {"lab": "demo_file_test_bucket", "value": "value-gcp-insights"}},
+    {"name": "raw_dataset", "group": "dataset", "values": {"lab": "membership_raw_lab", "value": "membership_raw"}},
+    {"name": "mart_dataset", "group": "dataset", "values": {"lab": "membership_lab", "value": "membership"}}
+  ],
+  "secrets": [],
+  "email": {
+    "enabled": true,
+    "receivers": {"lab": "pipeline.developer@example.com", "value": "pipeline.developer@example.com, membership-team@example.com"},
+    "send_on": {"failure": true, "success": true},
+    "subject": "{script} | {status} | {environment}",
+    "message": "The member payments load finished with status {status}.",
+    "attachments": [],
+    "file_summary": true
+  },
+  "steps": [
+    {
+      "type": "ingest",
+      "function_name": "ingest_member_payments",
+      "description": "Load today's member payment files into the raw staging table and the history table, then archive them",
+      "read_bucket": "{landing_bucket}",
+      "read_path": "inbound/payments",
+      "filename": "Member Payments_",
+      "file_format": "CSV",
+      "header": "0",
+      "skiprows": "None",
+      "separator": "|",
+      "columns": [
+        {"name": "member_id", "type": "STRING"},
+        {"name": "payment_date", "type": "DATE"},
+        {"name": "amount", "type": "NUMERIC"},
+        {"name": "channel", "type": "STRING"}
+      ],
+      "table_name": "member_payments_raw",
+      "staging_dataset": "{raw_dataset}",
+      "target_dataset": "{raw_dataset}",
+      "target_enabled": false,
+      "history": true,
+      "add_audit_columns": true,
+      "archive": true,
+      "archive_path": "inbound/payments/Archive",
+      "on_no_files": "warn"
+    },
+    {
+      "type": "sql",
+      "function_name": "build_payment_summary",
+      "description": "Add this run's payments to the daily payment summary",
+      "sql": "INSERT INTO `${write_project}.${mart_dataset}.payment_summary` (payment_date, channel, payments, amount)\nSELECT payment_date, channel, COUNT(*) AS payments, SUM(amount) AS amount\nFROM `${write_project}.${raw_dataset}.member_payments_raw`\nGROUP BY payment_date, channel",
+      "statement_kind": "DML",
+      "targets": ["${write_project}.${mart_dataset}.payment_summary"]
+    }
+  ]
+}

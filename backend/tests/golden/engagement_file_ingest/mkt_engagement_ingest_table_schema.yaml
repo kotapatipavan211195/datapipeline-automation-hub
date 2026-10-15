@@ -1,0 +1,26 @@
+# Table definition for mkt_engagement_ingest.py (-ts mkt_engagement_ingest_table_schema.yaml)
+# 
+table_definition:
+  table_name: engagement
+  table_schema:
+    Created: DATETIME
+    Drip_Id: STRING
+    Client_Id: STRING
+    Phone: STRING
+    Project_Name: STRING
+    Campaign: STRING
+    Engaged: INTEGER
+    Last_Engaged_Time: DATETIME
+    Transfered: INTEGER
+    Last_Transfered_Time: DATETIME
+    Clicked: INTEGER
+    Last_Clicked_Time: STRING
+    Closed: INTEGER
+    Last_Closed_Time: DATETIME
+    Converted: INTEGER
+    Last_Converted_Time: DATETIME
+    Long_Call: INTEGER
+    Disqualified: INTEGER
+    DQ_Channel: STRING
+    DQ_Tier: INTEGER
+    Last_DQ_Time: DATETIME

@@ -1,0 +1,12 @@
+# Table definition for dl_agent_roster_excel.py (-ts dl_agent_roster_excel_table_schema.yaml)
+# 
+table_definition:
+  table_name: agent_roster
+  table_schema:
+    agent_id: STRING
+    agent_name: STRING
+    office: STRING
+    hire_date: DATE
+    active: BOOLEAN
+    quota: NUMERIC
+    policies_sold: INTEGER

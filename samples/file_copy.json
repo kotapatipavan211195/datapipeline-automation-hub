@@ -1,0 +1,55 @@
+{
+  "spec_version": 3,
+  "process_type": "copy",
+  "metadata": {
+    "name": "vendor_file_copy",
+    "script_name": "dl_vendor_file_copy",
+    "description": "Moves the daily vendor files from the SFTP drop bucket to the landing folder and copies the outbound extract to the vendor's pickup folder.",
+    "owner": "pipeline.developer@example.com",
+    "team": "Membership",
+    "tags": ["copy", "vendor"],
+    "authors": ["P10000"],
+    "reviewers": [],
+    "jira": "DE-2211",
+    "created_on": "2026-10-14",
+    "updates": []
+  },
+  "environments": {"qa_enabled": false},
+  "variables": [
+    {"name": "read_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "write_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "vendor_bucket", "group": "bucket", "values": {"lab": "demo_vendor_drop_test", "value": "value-gcp-vendor-drop"}},
+    {"name": "landing_bucket", "group": "bucket", "values": {"lab": "demo_file_test_bucket", "value": "value-gcp-insights"}},
+    {"name": "ftp_bucket", "group": "bucket", "values": {"lab": "demo_ftp_test_bucket", "value": "value-gcp-ftp"}}
+  ],
+  "secrets": [],
+  "email": {
+    "enabled": true,
+    "receivers": {"lab": "pipeline.developer@example.com", "value": "pipeline.developer@example.com, membership-team@example.com"},
+    "send_on": {"failure": true, "success": false},
+    "subject": "{script} | {status} | {environment}",
+    "message": "The vendor file copy finished with status {status}.",
+    "attachments": []
+  },
+  "steps": [
+    {
+      "type": "copy",
+      "function_name": "move_vendor_files",
+      "description": "Move today's vendor files from the drop bucket to the landing folder",
+      "config_key": "file_copy",
+      "operation": "mv",
+      "sources": ["gs://{vendor_bucket}/outbound/Daily Vendor File_*.csv"],
+      "destination": "gs://{landing_bucket}/inbound/vendor/",
+      "no_clobber": true
+    },
+    {
+      "type": "copy",
+      "function_name": "copy_outbound_extract",
+      "description": "Copy today's outbound extract to the vendor pickup folder",
+      "config_key": "file_copy_2",
+      "operation": "cp",
+      "sources": ["gs://{ftp_bucket}/outbound/member_extract_{date:%Y_%m_%d}.txt"],
+      "destination": "gs://{vendor_bucket}/inbound/"
+    }
+  ]
+}

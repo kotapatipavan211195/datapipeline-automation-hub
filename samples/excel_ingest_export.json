@@ -1,0 +1,103 @@
+{
+  "spec_version": 3,
+  "metadata": {
+    "name": "agent_roster_excel",
+    "script_name": "dl_agent_roster_excel",
+    "description": "Loads the weekly agent roster workbook (sheet Roster, two title rows above the header) sent by the sales office, merges it into the agent table by agent id, then sends the active agents per office back as an Excel workbook and attaches it to the success email.",
+    "owner": "pipeline.developer@example.com",
+    "team": "Marketing",
+    "tags": ["ingestion", "excel", "export"],
+    "authors": ["P10000"],
+    "reviewers": [],
+    "jira": "DE-2301",
+    "created_on": "2026-10-14",
+    "updates": []
+  },
+  "environments": {"qa_enabled": false},
+  "variables": [
+    {"name": "read_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "write_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "landing_bucket", "group": "bucket", "values": {"lab": "demo_file_test_bucket", "value": "value-gcp-insights"}},
+    {"name": "landing_path", "group": "other", "values": {"lab": "agent_roster", "value": "inbound/agent_roster"}},
+    {"name": "archive_path", "group": "other", "values": {"lab": "agent_roster/Archive", "value": "Archive/inbound/agent_roster"}},
+    {"name": "outbound_bucket", "group": "bucket", "values": {"lab": "demo_file_test_bucket", "value": "value-gcp-ftp"}},
+    {"name": "temporary_dataset", "group": "dataset", "values": {"lab": "clubwide", "value": "discovery05"}},
+    {"name": "target_dataset", "group": "dataset", "values": {"lab": "clubwide", "value": "marketing01"}}
+  ],
+  "secrets": [],
+  "email": {
+    "enabled": true,
+    "receivers": {"lab": "marketing-dev@acme.example.com", "value": "marketing@acme.example.com"},
+    "send_on": {"failure": true, "success": true},
+    "subject": "{script} | {status} | {environment}",
+    "attachments": [],
+    "message": "The agent roster was loaded; the active agents per office are attached (status {status}).",
+    "file_summary": true
+  },
+  "steps": [
+    {
+      "type": "ingest",
+      "function_name": "ingest_agent_roster",
+      "description": "Load the agent roster workbook into staging, history and the agent table, then archive it",
+      "read_bucket": "{landing_bucket}",
+      "read_path": "{landing_path}",
+      "filename": "Agent_Roster_",
+      "file_format": "XLSX",
+      "sheet_name": "Roster",
+      "header": "0",
+      "skiprows": "2",
+      "columns": [
+        {"name": "agent_id", "type": "STRING"},
+        {"name": "agent_name", "type": "STRING"},
+        {"name": "office", "type": "STRING"},
+        {"name": "hire_date", "type": "DATE"},
+        {"name": "active", "type": "BOOLEAN"},
+        {"name": "quota", "type": "NUMERIC"},
+        {"name": "policies_sold", "type": "INTEGER"}
+      ],
+      "table_name": "agent_roster",
+      "target_table": "agent_roster_current",
+      "staging_dataset": "{temporary_dataset}",
+      "target_dataset": "{target_dataset}",
+      "history": true,
+      "load_mode": "merge",
+      "merge_keys": ["agent_id"],
+      "archive": true,
+      "archive_path": "{archive_path}",
+      "on_no_files": "warn"
+    },
+    {
+      "type": "export",
+      "function_name": "export_active_agents_xlsx",
+      "description": "Send the active agents per office to the sales office as an Excel workbook",
+      "source_kind": "query",
+      "source_sql": "SELECT office, agent_id, agent_name, hire_date, quota, policies_sold\nFROM `${write_project}.${target_dataset}.agent_roster_current`\nWHERE active AND hire_date <= @as_of\nORDER BY office, agent_name",
+      "parameters": [
+        {"name": "as_of", "bq_type": "DATE", "source": "today"}
+      ],
+      "file_format": "XLSX",
+      "sheet_name": "Active agents",
+      "config_key": "ftp",
+      "bucket": "{outbound_bucket}",
+      "path": "outbound/agent_roster",
+      "file_name": "active_agents_",
+      "date_suffix": "%Y%m%d",
+      "sharded": false,
+      "attach_to_email": true
+    },
+    {
+      "type": "export",
+      "function_name": "export_agent_table_xlsx",
+      "description": "Keep a full copy of the agent table as an Excel workbook",
+      "source_kind": "table",
+      "source_table": "{write_project}.{target_dataset}.agent_roster_current",
+      "file_format": "XLSX",
+      "config_key": "ftp_full",
+      "bucket": "{outbound_bucket}",
+      "path": "outbound/agent_roster/full",
+      "file_name": "agent_roster_",
+      "date_suffix": "%Y%m%d",
+      "sharded": false
+    }
+  ]
+}

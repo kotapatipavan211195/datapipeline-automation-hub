@@ -1,0 +1,18 @@
+# Table definition for dl_member_fixed_width_ingest.py (-ts dl_member_fixed_width_ingest_table_schema.yaml)
+# 
+table_definition:
+  table_name: member_extract
+  table_schema:
+    member_id: STRING
+    member_name: STRING
+    status_code: STRING
+    join_date: DATE
+    balance: NUMERIC
+    visits: INTEGER
+  column_widths:  # fixed-width file: characters per column, in file order (record length 69)
+    member_id: 10  # positions 1-10
+    member_name: 30  # positions 11-40
+    status_code: 2  # positions 41-42
+    join_date: 10  # positions 43-52
+    balance: 12  # positions 53-64
+    visits: 5  # positions 65-69

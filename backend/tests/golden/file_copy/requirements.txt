@@ -1,0 +1,4 @@
+# Runtime dependencies for dl_vendor_file_copy.py (Python 3.9+); the team modules come from /data/data_eng/py_scripts/modules
+google-cloud-bigquery>=3.25
+google-auth>=2.30
+PyYAML>=6.0

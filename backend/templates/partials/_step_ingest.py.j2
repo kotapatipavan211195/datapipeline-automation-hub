@@ -1,0 +1,134 @@
+def {{ v.fn }}(config_data, table_def{% if v.on_no_files == "email" %}, environment{% endif %}):
+    """{{ v.doc|py_docline }}"""
+
+    {{ v.log_begin }}
+
+    start = time.perf_counter()
+
+    # Read configurations and table definition from YAML files
+    write_project = config_data["write_project"]
+    gcs_config = config_data[{{ v.config_key|py_str }}]
+    read_bucket = gcs_config["gcs_read_bucket"]
+    read_prefix = gcs_config["gcs_read_bucket_path"] or ""
+{% if v.archive %}
+    archive_bucket = gcs_config["gcs_archive_bucket"]
+    archive_path = gcs_config["gcs_archive_bucket_path"]
+{% endif %}
+    filename = gcs_config["filename"]
+{% if v.xlsx %}
+    sheet_name = gcs_config.get("sheet_name") or 0  # '' = the first sheet
+{% endif %}
+{% if v.header_rows %}
+    header = gcs_config["header"]
+    skiprows = gcs_config["skiprows"]
+{% endif %}
+{% if v.delimited %}
+    separator = gcs_config["separator"]
+{% endif %}
+{% if v.history %}
+    write_disposition = config_data.get("write_disposition", "WRITE_APPEND")
+{% endif %}
+{% if v.target or v.history %}
+    dataset_id = config_data["datasets"]["target"]
+{% endif %}
+    dataset_id_1 = config_data["datasets"]["temporary"]
+    table_name = table_def["table_name"]
+    table_schema_dict = table_def["table_schema"]
+    bq_schema = [bigquery.SchemaField(col, dtype.upper(), mode="NULLABLE") for col, dtype in table_schema_dict.items()]
+{% if v.fixed %}
+    column_widths = table_def["column_widths"]
+    widths = [int(column_widths[col]) for col in table_schema_dict]  # characters per column, in file order
+{% endif %}
+{% if v.history %}
+    history_table = f"{table_name}_history"
+{% endif %}
+{% if v.target %}
+    target_table = {{ v.target_expr }}
+{% endif %}
+{% if file_summary %}
+    staging_table_id = f"{write_project}.{dataset_id_1}.{table_name}"  # for the email's file summary
+{% if v.target %}
+    target_table_id = f"{write_project}.{dataset_id}.{target_table}"
+{% endif %}
+{% endif %}
+
+    try:
+        files = list(storage_client.list_blobs(read_bucket, prefix=read_prefix))
+        qualified_files = [
+            f
+            for f in files
+            if filename in os.path.basename(f.name)
+            and f.name.lower().endswith({{ v.extensions }})
+{% if v.archive %}
+            and not (archive_bucket == read_bucket and f.name.startswith(archive_path.strip("/") + "/"))
+{% endif %}
+        ]
+        # Oldest upload first: the newest file is applied last
+        qualified_files.sort(key=lambda f: (f.updated, f.name))
+        if not qualified_files:
+{% if v.on_no_files == "fail" %}
+            raise RuntimeError(f"No files matching '{filename}' in gs://{read_bucket}/{read_prefix}")
+{% else %}
+{% if v.on_no_files == "email" %}
+            logger.info("No valid files to process.")
+{% else %}
+            logger.warning(f"No valid files to process: nothing matching '{filename}' in gs://{read_bucket}/{read_prefix}")
+{% endif %}
+{% if not v.target %}
+            empty_staging_table(write_project, dataset_id_1, table_name)
+{% endif %}
+{% if file_summary %}
+            FILE_SUMMARY.append(f"No file matching '{filename}' in gs://{read_bucket}/{read_prefix}")
+{% endif %}
+{% if v.on_no_files == "email" %}
+            email(config_data, environment, "NO FILE", message=f"There is no {filename} file received today.")
+{% endif %}
+{% endif %}
+        else:
+{% if not v.target %}
+            # The run's first file empties the staging table; the next ones are added
+            staging_disposition = "WRITE_TRUNCATE"
+{% elif v.truncate_target %}
+            # The run's first file replaces the target's rows; the next ones are added
+            truncate_target = True
+{% endif %}
+            for file_obj in qualified_files:
+                if file_obj.size > 0:
+                    df = process_file(file_obj, table_schema_dict{% if v.delimited %}, separator{% elif v.fixed %}, widths{% elif v.xlsx %}, sheet_name{% endif %}{% if v.header_rows %}, header, skiprows{% endif %})
+                    load_to_bq(df, write_project, {% if v.history %}dataset_id, {% endif %}dataset_id_1, table_name, {% if v.history %}history_table, {% endif %}bq_schema{% if v.history %}, write_disposition{% endif %}{% if not v.target %}, staging_disposition{% endif %})
+{% if not v.target %}
+                    staging_disposition = "WRITE_APPEND"
+{% elif v.load_mode == "merge" %}
+                    {{ "changed = " if file_summary else "" }}merge_to_main_table(write_project, dataset_id, dataset_id_1, table_name, target_table, bq_schema)
+{% else %}
+                    {{ "changed = " if file_summary else "" }}insert_to_main_table(write_project, dataset_id, dataset_id_1, table_name, target_table{% if v.truncate_target %}, truncate_target{% endif %})
+{% if v.truncate_target %}
+                    truncate_target = False
+{% endif %}
+{% endif %}
+{% if file_summary %}
+                    loaded = f"{len(df):,} rows loaded into {staging_table_id}"
+{% if v.target %}
+                    loaded += f"; {changed or 0:,} rows {{ v.target_verb }} {target_table_id}"
+{% endif %}
+                    FILE_SUMMARY.append(f"{os.path.basename(file_obj.name)}: {loaded}")
+{% endif %}
+{% if v.archive %}
+                    archive_data_file(file_obj.name, read_bucket, archive_bucket, archive_path)
+                else:
+                    archive_data_file(file_obj.name, read_bucket, archive_bucket, archive_path)
+                    logger.info(f"Skipped empty file: {file_obj.name}")
+{% else %}
+                else:
+                    logger.info(f"Skipped empty file: {file_obj.name}")
+{% endif %}
+{% if file_summary %}
+                    FILE_SUMMARY.append(f"{os.path.basename(file_obj.name)}: empty file, skipped")
+{% endif %}
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+    except Exception as e:
+        s = str(e)
+        raise RuntimeError(s)

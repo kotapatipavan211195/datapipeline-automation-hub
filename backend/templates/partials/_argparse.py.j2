@@ -1,0 +1,13 @@
+if __name__ == "__main__":
+
+    # Parser handles trapping errors no need to check for sys.arg length
+    parser = argparse.ArgumentParser(description={{ cli.description|py_str }}, epilog="Command line arguments for process.")
+    parser.add_argument('environment', choices={{ cli.environments }}, help={{ cli.env_help|py_str }}, metavar="Environment")
+    parser.add_argument('-cf', default={{ cli.config_file|py_str }}, help="Configuration filename and path", metavar="Configuration filename")
+{% if cli.schema_file %}
+    parser.add_argument('-ts', default={{ cli.schema_file|py_str }}, help="Table schema filename and path", metavar="Table schema filename")
+{% endif %}
+
+    args = parser.parse_args()
+
+    main(args)

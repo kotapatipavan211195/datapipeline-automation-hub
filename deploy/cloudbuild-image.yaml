@@ -1,0 +1,10 @@
+# Build + push only (used by setup_gcp.sh for the first deployment).
+substitutions:
+  _IMAGE: ""
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/Dockerfile", "-t", "${_IMAGE}", "."]
+images:
+  - ${_IMAGE}
+options:
+  logging: CLOUD_LOGGING_ONLY

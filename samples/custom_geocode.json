@@ -1,0 +1,63 @@
+{
+  "spec_version": 3,
+  "process_type": "pipeline",
+  "metadata": {
+    "name": "member_geocode",
+    "script_name": "dl_member_geocode",
+    "description": "Refreshes the active member addresses and geocodes them with the maps API (key from Secret Manager) into the member geocode table.",
+    "owner": "pipeline.developer@example.com",
+    "team": "Membership",
+    "tags": ["custom", "geocode"],
+    "authors": ["P10000"],
+    "reviewers": [],
+    "jira": "DE-2300",
+    "created_on": "2026-10-15",
+    "updates": []
+  },
+  "environments": {"qa_enabled": false},
+  "variables": [
+    {"name": "read_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "write_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "gsm_project", "group": "project", "values": {"lab": "demo-analytics-dev", "value": "value-gcp"}},
+    {"name": "member_dataset", "group": "dataset", "values": {"lab": "membership_lab", "value": "membership"}}
+  ],
+  "secrets": [
+    {"name": "geocode_api_key", "secret_id": "maps-geocode-api-key", "version": "latest", "description": "maps geocoding API key: JSON {\"api_credentials\": [{\"api\": \"<key>\"}]}"}
+  ],
+  "email": {
+    "enabled": false,
+    "receivers": {"lab": "", "value": ""},
+    "send_on": {"failure": true, "success": true},
+    "subject": "{script} | {status} | {environment}",
+    "message": "The {process} process finished with status {status}.",
+    "attachments": []
+  },
+  "steps": [
+    {
+      "type": "sql",
+      "function_name": "refresh_member_addresses",
+      "description": "Rebuild the table of active member addresses to geocode",
+      "sql": "CREATE OR REPLACE TABLE `${write_project}.${member_dataset}.member_addresses` AS\nSELECT member_id, address_line, city, state, zip_code\nFROM `${read_project}.membership.members`\nWHERE status = 'ACTIVE'",
+      "statement_kind": "DDL",
+      "targets": ["${write_project}.${member_dataset}.member_addresses"]
+    },
+    {
+      "type": "custom",
+      "function_name": "geocode_member_addresses",
+      "description": "Geocode the member addresses with the maps API and store latitude/longitude",
+      "config_key": "geocode_config",
+      "request": "Take the API key from the secret geocode_api_key (the 'api' value of the first 'api_credentials' entry), geocode every address of address_table with the maps geocoding API and write member_id, latitude, longitude and geocoded_ts into result_table.",
+      "settings": [
+        {"key": "secret_list_key", "value": "api_credentials", "description": "list in the secret's JSON payload that holds the credentials"},
+        {"key": "secret_value_key", "value": "api", "description": "key of the API key in the first entry of that list"},
+        {"key": "geocode_url", "value": "https://maps.googleapis.com/maps/api/geocode/json", "description": "geocoding endpoint"},
+        {"key": "address_table", "value": "{write_project}.{member_dataset}.member_addresses", "description": "addresses to geocode"},
+        {"key": "result_table", "value": "{write_project}.{member_dataset}.member_geocodes", "description": "where the coordinates go"}
+      ],
+      "imports": ["import requests"],
+      "requirements": ["requests>=2.31"],
+      "code": "secret_list_key = geocode_config.get('secret_list_key', 'api_credentials')\nsecret_value_key = geocode_config.get('secret_value_key', 'api')\napi_key = SECRETS['geocode_api_key'][secret_list_key][0].get(secret_value_key)\nif not api_key:\n    raise ValueError(\"API key not found in secret payload. Check secret structure.\")\n\naddress_table = geocode_config['address_table']\nresult_table = geocode_config['result_table']\n\nsql = f\"\"\"\n    SELECT member_id, address_line, city, state, zip_code\n    FROM `{address_table}`\n\"\"\"\nrows = list(bq_client.query(sql).result())\nlogger.info(f\"{len(rows)} address(es) to geocode\")\n\nresults = []\nwith requests.Session() as session:\n    for row in rows:\n        address = f\"{row['address_line']}, {row['city']}, {row['state']} {row['zip_code']}\"\n        response = session.get(geocode_config['geocode_url'], params={\"address\": address, \"key\": api_key}, timeout=30)\n        response.raise_for_status()\n        matches = response.json().get(\"results\") or []\n        if not matches:\n            logger.warning(f\"No match for member {row['member_id']}\")\n            continue\n        location = matches[0][\"geometry\"][\"location\"]\n        results.append({\"member_id\": row[\"member_id\"], \"latitude\": location[\"lat\"], \"longitude\": location[\"lng\"],\n                        \"geocoded_ts\": datetime.now().isoformat()})\n\nif results:\n    errors = bq_client.insert_rows_json(result_table, results)\n    if errors:\n        raise RuntimeError(f\"BigQuery rejected {len(errors)} row(s): {errors[:3]}\")\nlogger.info(f\"Geocoded {len(results)} of {len(rows)} address(es) into {result_table}\")",
+      "generated_by": "gemini-2.5-pro"
+    }
+  ]
+}

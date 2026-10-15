@@ -1,0 +1,12 @@
+# Table definition for sales_daily.py (-ts sales_daily_table_schema.yaml)
+# 
+table_definition:
+  table_name: store_sales_stg
+  table_schema:
+    store_id: INTEGER  # store number
+    sku: STRING
+    sold_at: TIMESTAMP
+    sale_date: DATE
+    quantity: INTEGER
+    amount: NUMERIC
+    store_code: STRING

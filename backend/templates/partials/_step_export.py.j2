@@ -1,0 +1,170 @@
+#### Uploading files to gcs buckets using {{ "pandas (Excel)" if v.xlsx else "extract job config" if v.source_kind == "table" else "EXPORT DATA" }}####
+def {{ v.fn }}(config_data):
+    """
+    {{ v.doc|py_docline }}
+
+    Args:
+        config_data (dict): Configuration data containing write project and GCS configuration.
+
+    Returns:
+        str: the gs:// path of the file(s) written.
+    """
+    {{ v.log_begin }}
+
+    start = time.perf_counter()
+
+    # Break out configuration information
+{% for line in v.breakout %}
+    {{ line }}
+{% endfor %}
+    ftp = config_data.get({{ v.config_key|py_str }}, {})
+    gcs_write_bucket = ftp.get('bucket')
+    gcs_write_path = ftp.get('path') or ''
+    extract_file_name = ftp.get('file_name')
+
+{% if v.date_suffix %}
+    extract_filename_suffix = date.today().strftime({{ v.date_suffix|py_str }})
+    extract_file_name = f"{extract_file_name}{extract_filename_suffix}{{ v.name_tail }}"
+{% else %}
+    extract_file_name = f"{extract_file_name}{{ v.name_tail }}"
+{% endif %}
+    object_name = f"{gcs_write_path.strip('/')}/{extract_file_name}" if gcs_write_path else extract_file_name
+    destination_uri = f"gs://{gcs_write_bucket}/{object_name}"
+{% if v.xlsx %}
+{% if sql_logger and v.source_kind == "query" %}
+    job_id = None
+{% endif %}
+    try:
+{% if v.source_kind == "table" %}
+        source_table_id = {{ v.source_expr }}
+        df = bq_client.list_rows(source_table_id).to_dataframe()  # BigQuery cannot extract Excel: read the rows here
+{% else %}
+        sql = {{ v.sql_literal }}
+{% if v.params %}
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+{% for p in v.params %}
+                bigquery.ScalarQueryParameter({{ p.name|py_str }}, {{ p.bq_type|py_str }}, {{ p.expr }}),  # {{ p.explain|py_comment }}
+{% endfor %}
+            ],
+        )
+        response = bq_client.query(sql, job_config=job_config)  # Google API to run SQL Code
+{% else %}
+        response = bq_client.query(sql)  # Google API to run SQL Code
+{% endif %}
+{% if sql_logger %}
+        job_id = response.job_id
+{% endif %}
+        df = response.to_dataframe()  # waits for the query
+{% if sql_logger %}
+        capture.write_to_log({{ v.fn }}.__name__, sql, "success", job_id)
+{% endif %}
+{% endif %}
+        if len(df) > {{ v.max_rows }}:
+            raise RuntimeError(f"{len(df)} rows do not fit in one Excel sheet (at most {{ v.max_rows }})")
+        for col in df.columns:  # Excel has no time zones (TIMESTAMP is UTC) and no BigQuery date/time types
+            if isinstance(df[col].dtype, pd.DatetimeTZDtype):
+                df[col] = df[col].dt.tz_localize(None)
+            elif df[col].dtype.name in ("dbdate", "dbtime"):
+                df[col] = df[col].astype(object)
+        buffer = io.BytesIO()
+        df.to_excel(buffer, sheet_name={{ v.sheet_name|py_str }}, index=False, header={{ v.print_header }}, engine="openpyxl")
+        storage_client.bucket(gcs_write_bucket).blob(object_name).upload_from_string(
+            buffer.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+        logger.info(f"Exported {len(df)} rows to {destination_uri}")
+{% if file_summary %}
+        FILE_SUMMARY.append(f"{len(df):,} rows exported to {destination_uri}")
+{% endif %}
+        return destination_uri
+
+    except Exception as e:
+{% if sql_logger and v.source_kind == "query" %}
+        capture.write_to_log({{ v.fn }}.__name__, sql, "failure", job_id)
+{% endif %}
+        s = str(e)
+        raise RuntimeError(s)
+{% elif v.source_kind == "table" %}
+
+    source_table_id = {{ v.source_expr }}
+
+    job_config = bigquery.ExtractJobConfig(
+{% if v.delimited %}
+        field_delimiter={{ v.field_delimiter|py_str }},
+        print_header={{ v.print_header }},
+{% endif %}
+        destination_format=bigquery.DestinationFormat.{{ v.bq_format }},
+{% if v.compression != "NONE" %}
+        compression=bigquery.Compression.{{ v.compression }},
+{% endif %}
+    )
+    try:
+        extract_job = bq_client.extract_table(
+            source_table_id,
+            destination_uri,
+            location={{ location|py_str }},  # Specify your desired location
+            job_config=job_config,
+        )
+        extract_job.result()
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+        logger.info(f"Exported {source_table_id} to {destination_uri}")
+{% if file_summary %}
+        rows = bq_client.get_table(source_table_id).num_rows
+        FILE_SUMMARY.append(f"{rows or 0:,} rows of {source_table_id} exported to {destination_uri}")
+{% endif %}
+        return destination_uri
+
+    except Exception as e:
+        s = str(e)
+        raise RuntimeError(s)
+{% else %}
+{% if sql_logger %}
+    job_id = None
+{% endif %}
+    try:
+        sql = {{ v.sql_literal }}
+        export_sql = f"EXPORT DATA OPTIONS ({{ v.export_options }}) AS\n{sql}"
+{% if v.params %}
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+{% for p in v.params %}
+                bigquery.ScalarQueryParameter({{ p.name|py_str }}, {{ p.bq_type|py_str }}, {{ p.expr }}),  # {{ p.explain|py_comment }}
+{% endfor %}
+            ],
+        )
+        response = bq_client.query(export_sql, job_config=job_config)  # Google API to run SQL Code
+{% else %}
+        response = bq_client.query(export_sql)  # Google API to run SQL Code
+{% endif %}
+{% if sql_logger %}
+        job_id = response.job_id
+{% endif %}
+        response.result()  # Wait for complete
+{% if sql_logger %}
+        capture.write_to_log({{ v.fn }}.__name__, export_sql, "success", job_id)
+{% endif %}
+
+        execution_time = round(time.perf_counter() - start, 2)
+
+        {{ v.log_end }}
+        logger.info(f"Exported the query results to {destination_uri}")
+{% if file_summary %}
+        stats = response.to_api_repr().get("statistics", {}).get("query", {}).get("exportDataStatistics", {})
+        FILE_SUMMARY.append(f"{int(stats.get('rowCount') or 0):,} rows exported to {destination_uri}")
+{% endif %}
+        return destination_uri
+
+    except Exception as e:
+{% if sql_logger %}
+        capture.write_to_log({{ v.fn }}.__name__, export_sql, "failure", job_id)
+{% endif %}
+        s = str(e)
+        raise RuntimeError(s)
+{% endif %}

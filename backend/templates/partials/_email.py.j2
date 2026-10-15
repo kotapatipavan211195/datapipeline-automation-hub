@@ -1,0 +1,108 @@
+# Email module
+{% if mail.has_attachments %}
+def stream_file(attachment):
+    """Download one attachment (gs://bucket/path/file or a local file) and return (bytes, file name)."""
+    logger.info(f"Attachment download begin: {attachment}")
+    try:
+        if attachment.startswith("gs://"):
+            bucket_name, _, blob_name = attachment[len("gs://"):].partition("/")
+            data = storage_client.bucket(bucket_name).blob(blob_name).download_as_bytes()
+        else:
+            with open(attachment, "rb") as attachment_file:
+                data = attachment_file.read()
+        logger.info("File has been downloaded")
+        return data, os.path.basename(attachment)
+    except Exception:
+        logger.exception("Error occured while downloading the attachment")
+        raise
+
+
+def collect_attachments(paths):
+    """Read every attachment; a * in a gs:// path attaches every matching file (sharded exports)."""
+    files = []
+    for path in paths:
+        if path.startswith("gs://") and "*" in path:
+            bucket_name, _, pattern = path[len("gs://"):].partition("/")
+            prefix, _, suffix = pattern.partition("*")
+            for blob in storage_client.list_blobs(bucket_name, prefix=prefix):
+                if blob.name.endswith(suffix.replace("*", "")):
+                    files.append(stream_file(f"gs://{bucket_name}/{blob.name}"))
+        else:
+            files.append(stream_file(path))
+    return files
+
+
+{% endif %}
+def send_email(sender_email, receiver_email, subject, body, attachments=None):
+    """Send the email through the internal mail relay (behind the VPN: no login)."""
+    logger.info("Executing Automated Email Begin")
+    try:
+        message = EmailMessage()
+        message["From"] = sender_email
+        message["To"] = ", ".join(receiver_email)
+        message["Subject"] = subject
+        message.set_content(body)
+        for attachment_data, attachment_filename in attachments or []:
+            message.add_attachment(attachment_data, maintype='application', subtype='octet-stream', filename=attachment_filename)
+
+        smtp_server = {{ mail.smtp_host|py_str }}
+        smtp_port = {{ mail.smtp_port }}
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+{% if mail.smtp_starttls %}
+            server.starttls()
+{% endif %}
+            server.send_message(message)
+            logger.info("Executed Automated Email Send")
+    except Exception:
+        logger.exception("Error occured while sending the email")
+        raise
+
+
+def email(config_data, environment, status, message=None, attachments=None):
+    """Build and send the notification email (the 'email' block of the YAML)."""
+
+    # email parameters
+    email_config = config_data.get('email', {})
+    sender_email = email_config.get('sender')
+    receiver_email = email_config.get('receiver')
+{% if mail.has_attachments %}
+
+    # attachment parameters
+{% if mail.attachments_use_date %}
+    attachment = [path.format(date=date.today()) for path in email_config.get('attachment') or []]
+{% else %}
+    attachment = list(email_config.get('attachment') or [])
+{% endif %}
+{% endif %}
+
+    try:
+        logger.info("Email configuration begin")
+        tokens = {
+            "status": status,
+            "script": CONFIG["SCRIPT_NAME"],
+            "process": {{ process|py_str }},
+            "environment": environment,
+            "date": date.today(),
+        }
+        subject = {{ mail.subject_literal }}.format(**tokens)  #subject of the email
+        if message is None:
+            message = {{ mail.message_literal }}.format(**tokens)
+{% if file_summary %}
+        if FILE_SUMMARY:  # the files loaded and exported so far (also when a step failed)
+            message = f"{message}\n\nFiles processed:\n" + "\n".join(f"- {line}" for line in FILE_SUMMARY)
+{% endif %}
+        body = {{ mail.body_literal }}  #body of the email
+
+{% if mail.has_attachments %}
+        #For email with attachment
+        files = collect_attachments(attachment + list(attachments or []))
+        send_email(sender_email, receiver_email, subject, body, files)
+{% else %}
+        send_email(sender_email, receiver_email, subject, body)
+{% endif %}
+
+        logger.info("Email configuration end")
+    except Exception:
+        logger.exception("Error occured while configuring the email")
+        raise
